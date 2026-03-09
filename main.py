@@ -9,6 +9,7 @@ log = logging.getLogger(__name__)  # get a logger for this file
 log.info("Starting bot...")
 
 intents = discord.Intents.default()  # slash commands do not need privileged intents
+intents.members = True
 bot = BaseBot(intents=intents)
 
 log.info("Running bot...")
