@@ -79,15 +79,6 @@ class General(commands.Cog):
             )
 
             embed.add_field(
-                name="💳 CCP Payment Info",
-                value="**Full Name:** Zaoui Ilias Kamel\n"
-                      "**CCP:** 42893906\n"
-                      "***Clé:*** 07\n"
-                      "**Baridimob RIP:** ```00799999004289390646```",
-                inline=False
-            )
-
-            embed.add_field(
                 name="Signup Deadline",
                 value="**Tuesday 11th of this month at 23:59**",
                 inline=False
