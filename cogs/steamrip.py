@@ -15,7 +15,7 @@ from discord.ext import commands
 
 log = logging.getLogger(__name__)
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 STEAMRIP_BASE = "https://steamrip.com/"
 
 
@@ -53,25 +53,15 @@ def clean_game_title(title: str) -> str:
     return title
 
 
-# --- NEW: perfect-match helpers ---
-
 def strip_version_suffix(title: str) -> str:
-    """
-    Removes trailing "(...)" suffix ONLY for matching.
-    Example: "R.E.P.O (Build 123)" -> "R.E.P.O"
-    """
+    """Removes trailing "(...)" suffix ONLY for matching."""
     if not title:
         return title
     return re.sub(r"\s*\([^)]*\)\s*$", "", title).strip()
 
 
 def match_key(text: str) -> str:
-    """
-    Comparison key for exact-ish matching:
-    - case-insensitive
-    - ignores punctuation/spaces
-    So: "R.E.P.O" == "REPO"
-    """
+    """Comparison key for exact-ish matching (case-insensitive, no punctuation)."""
     if not text:
         return ""
     text = text.casefold()
@@ -135,7 +125,7 @@ def host_to_label(netloc: str) -> str:
 
 
 # ================================
-#   Search parsing
+#   Adaptive Search Parsing
 # ================================
 
 @dataclass
@@ -147,39 +137,66 @@ class SearchResult:
 
 def parse_search_results(soup: BeautifulSoup) -> list[SearchResult]:
     results: list[SearchResult] = []
-    grid = soup.find("div", id="masonry-grid")
-    if not grid:
-        return results
+    
+    # Adaptive container search if 'masonry-grid' has layout modifications
+    grid = (
+        soup.find("div", id="masonry-grid") 
+        or soup.find("main") 
+        or soup.find("div", class_=lambda c: c and any(w in c.lower() for w in ["grid", "content", "main-wrapper"]))
+        or soup
+    )
 
     seen_urls: set[str] = set()
 
-    for a in grid.select("a.all-over-thumb-link"):
-        raw_href = a.get("href") or ""
-        href = normalize_url(raw_href, STEAMRIP_BASE)
-        if not href or href in seen_urls:
-            continue
+    # Search for specific post wrappers, structural semantic tags, or grid containers
+    cards = grid.select("div.post-element") or grid.select("article") or grid.select(".container-wrapper")
+    
+    # Safety fallback if container elements were abstracted entirely
+    if not cards:
+        cards = [a for a in grid.find_all("a", href=True) if "/wp-content/uploads/" not in a["href"] and len(a.get_text(strip=True)) > 3]
 
-        card = a.find_parent(
-            "div",
-            class_=lambda c: c and "container-wrapper" in c.split() and "post-element" in c.split(),
+    for card in cards:
+        a_tag = (
+            card if card.name == "a" 
+            else (card.select_one("a.all-over-thumb-link") or card.select_one("h2 a") or card.select_one("h3 a") or card.find("a", href=True))
         )
-        if not card or card.parent is not grid:
+        if not a_tag:
             continue
 
-        title_el = card.select_one("h2.thumb-title a")
+        raw_href = a_tag.get("href") or ""
+        href = normalize_url(raw_href, STEAMRIP_BASE)
+        if not href or href in seen_urls or href == STEAMRIP_BASE:
+            continue
+
+        # Extract title from multi-tiered contextual positions
+        title_el = card.select_one("h2.thumb-title a") or card.select_one("h2") or card.select_one("h3") or a_tag
         title = title_el.get_text(strip=True) if title_el else ""
-        if not title:
-            sr = a.select_one("span.screen-reader-text")
-            title = sr.get_text(strip=True) if sr else ""
+        
+        sr = card.select_one("span.screen-reader-text")
+        if sr and sr.get_text(strip=True) in title:
+            title = title.replace(sr.get_text(strip=True), "").strip()
 
         title = clean_game_title(title)
+        if not title or len(title) < 2:
+            continue
 
+        # Extract imagery securely from responsive backgrounds or native image properties
         img = None
-        slide = card.select_one("div.slide")
+        slide = card.select_one("div.slide") or card.select_one(".thumb-image")
         if slide:
-            img = slide.get("data-back") or slide.get("data-back-webp")
-            if img:
-                img = normalize_url(str(img), STEAMRIP_BASE)
+            img = slide.get("data-back") or slide.get("data-back-webp") or slide.get("style")
+            if img and "url(" in str(img):
+                match = re.search(r"url\(['\"]?([^'\")]+)['\"]?\)", str(img))
+                if match:
+                    img = match.group(1)
+        
+        if not img:
+            img_tag = card.find("img")
+            if img_tag:
+                img = img_tag.get("data-src") or img_tag.get("src")
+
+        if img:
+            img = normalize_url(str(img), STEAMRIP_BASE)
 
         results.append(SearchResult(title=title, url=href, image=img))
         seen_urls.add(href)
@@ -188,7 +205,7 @@ def parse_search_results(soup: BeautifulSoup) -> list[SearchResult]:
 
 
 # ================================
-#   Game page parsing (for /post & button)
+#   Adaptive Game Page Parsing
 # ================================
 
 def extract_game_data(soup: BeautifulSoup, url: str) -> dict:
@@ -203,38 +220,53 @@ def extract_game_data(soup: BeautifulSoup, url: str) -> dict:
         except Exception:
             continue
 
-    if not schema:
-        raise ValueError("invalid_schema")
+    title = schema.get("headline", "") if schema else ""
+    if not title:
+        h1 = soup.find("h1")
+        title = h1.get_text(strip=True) if h1 else "Unknown Title"
+        
+    title = clean_game_title(title)
 
-    title = schema.get("headline", "Unknown Title")
-    image = (
-        (schema.get("image") or {}).get("url")
-        or (schema.get("image") or {}).get("@id")
-        or schema.get("image")
-    )
-    date_modified = schema.get("dateModified", "")
+    image = None
+    if schema:
+        image = (
+            (schema.get("image") or {}).get("url")
+            or (schema.get("image") or {}).get("@id")
+            or schema.get("image")
+        )
+    if not image:
+        img_el = soup.find("meta", property="og:image")
+        image = img_el.get("content") if img_el else None
+
+    date_modified = schema.get("dateModified", "") if schema else ""
+    if not date_modified:
+        meta_date = soup.find("meta", property="article:modified_time")
+        date_modified = meta_date.get("content", "") if meta_date else ""
 
     game_info: dict[str, str] = {}
     system_reqs: list[str] = []
 
-    content = soup.find("div", class_="entry-content")
+    content = soup.find("div", class_="entry-content") or soup.find("article")
     if content:
         for li in content.find_all("li"):
             text = li.get_text(strip=True)
-            if text.startswith("Genre"):
-                game_info["Genre"] = text.replace("Genre:", "", 1).strip()
-            elif text.startswith("Developer"):
-                game_info["Developer"] = text.replace("Developer:", "", 1).strip()
-            elif text.startswith("Platform"):
-                game_info["Platform"] = text.replace("Platform:", "", 1).strip()
-            elif text.startswith("Game Size"):
-                game_info["Game Size"] = text.replace("Game Size:", "", 1).strip()
-            elif text.startswith("Version"):
-                game_info["Version"] = text.replace("Version:", "", 1).strip()
-            elif "Pre-Installed" in text:
+            if "genre" in text.lower():
+                game_info["Genre"] = text.split(":", 1)[-1].strip()
+            elif "developer" in text.lower():
+                game_info["Developer"] = text.split(":", 1)[-1].strip()
+            elif "platform" in text.lower():
+                game_info["Platform"] = text.split(":", 1)[-1].strip()
+            elif "game size" in text.lower():
+                game_info["Game Size"] = text.split(":", 1)[-1].strip()
+            elif "version" in text.lower():
+                game_info["Version"] = text.split(":", 1)[-1].strip()
+            elif "pre-installed" in text.lower():
                 game_info["Pre-Installed"] = "Yes"
 
-        sys_section = content.find("h4", string=lambda x: x and "SYSTEM REQUIREMENTS" in x.upper())
+        sys_section = content.find(
+            lambda tag: tag.name in ["h3", "h4", "div", "strong"] 
+            and tag.text and "SYSTEM REQUIREMENTS" in tag.text.upper()
+        )
         if sys_section:
             ul = sys_section.find_next("ul")
             if ul:
@@ -264,15 +296,42 @@ def extract_game_data(soup: BeautifulSoup, url: str) -> dict:
 
 def extract_download_links(soup: BeautifulSoup, page_url: str) -> list[dict]:
     links = []
-    for a in soup.select("a.shortc-button.medium.purple"):
+    content = soup.find("div", class_="entry-content") or soup.find("article") or soup
+    
+    for a in content.find_all("a", href=True):
         href = normalize_url(a.get("href") or "", page_url)
         if not href:
             continue
-        netloc = urlparse(href).netloc
-        if netloc:
-            links.append({"label": host_to_label(netloc), "url": href})
-    return links
+            
+        netloc = urlparse(href).netloc.lower()
+        if not netloc or "steamrip.com" in netloc or any(x in href for x in ["facebook", "twitter", "pinterest", "wp-content"]):
+            continue
+            
+        classes = " ".join(a.get("class", [])).lower()
+        is_button = any(w in classes for w in ["button", "btn", "shortc"])
+        is_filehost = any(host in netloc for host in ["mega", "gofile", "qiwi", "pixeldrain", "buzzheavier", "krakenfiles", "1fichier", "torrent"])
 
+        if is_button or is_filehost:
+            label = host_to_label(netloc)
+            link_text = a.get_text(strip=True)
+            if link_text and len(link_text) < 30 and "download" not in link_text.lower():
+                label = f"{label} ({link_text})"
+                
+            links.append({"label": label, "url": href})
+            
+    seen = set()
+    deduped_links = []
+    for l in links:
+        if l["url"] not in seen:
+            seen.add(l["url"])
+            deduped_links.append(l)
+
+    return deduped_links
+
+
+# ================================
+#   Game Layout Presentation
+# ================================
 
 async def create_game_embed_and_view(
     interaction: discord.Interaction,
@@ -282,9 +341,6 @@ async def create_game_embed_and_view(
 ):
     try:
         soup = await fetch_page(game_url)
-        if not soup.find("div", class_="entry-content"):
-            raise ValueError("not_game_page")
-
         data = extract_game_data(soup, game_url)
         dl_links = extract_download_links(soup, game_url)
 
@@ -344,7 +400,7 @@ async def create_game_embed_and_view(
 
 
 # ================================
-#   Button for search results
+#   Button UI for Search Interfaces
 # ================================
 
 def random_id() -> int:
@@ -367,7 +423,7 @@ class PostGameButton(discord.ui.Button):
 
 
 # ================================
-#   Main Cog
+#   Main Cog Command Controller
 # ================================
 
 class SteamRIP(commands.Cog):
@@ -390,13 +446,11 @@ class SteamRIP(commands.Cog):
             search_url = f"{STEAMRIP_BASE}?s={quote_plus(query)}"
             soup = await fetch_page(search_url)
 
-            # --- NEW: perfect match logic ---
             all_results = parse_search_results(soup)
             q_key = match_key(query)
 
             perfect = None
             for r in all_results:
-                # r.title is already cleaned (FREE DOWNLOAD removed)
                 t1 = match_key(r.title)
                 t2 = match_key(strip_version_suffix(r.title))
                 if q_key and (q_key == t1 or q_key == t2):
@@ -404,7 +458,6 @@ class SteamRIP(commands.Cog):
                     break
 
             results = [perfect] if perfect else all_results[:4]
-            # --- END NEW ---
 
             if not results:
                 embed = soft_error_embed(
@@ -421,7 +474,6 @@ class SteamRIP(commands.Cog):
                     timestamp=datetime.utcnow(),
                 )
 
-                # attach image instead of thumbnail-hotlink
                 cover = None
                 if res.image:
                     cover = await fetch_image_as_discord_file(res.image)
