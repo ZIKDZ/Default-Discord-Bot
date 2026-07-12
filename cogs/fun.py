@@ -15,10 +15,14 @@ SPAM_DELAY = 0.01
 COOLDOWN_SECONDS = 15
 
 # --- Roulette config ---
-ROULETTE_STAFF_ONLY = False       # set True to restrict /roulette to staff too
-ROULETTE_CHAMBERS = 6             # 1-in-N odds (6 = classic revolver)
+ROULETTE_STAFF_ONLY = False
+ROULETTE_CHAMBERS = 6
 ROULETTE_COOLDOWN_SECONDS = 10
 ROULETTE_KICK_REASON = "Lost VC roulette 🔫"
+
+ROULETTE_COLOR_SPIN = 0x2B2D31
+ROULETTE_COLOR_SURVIVE = 0x57F287
+ROULETTE_COLOR_DEATH = 0xED4245
 # ==============================
 
 
@@ -51,19 +55,16 @@ class Fun(commands.Cog):
         member: discord.Member,
         amount: app_commands.Range[int, 1, MAX_SPAM]
     ):
-        # silent=True prevents the visible "Bot is thinking..." state (more anonymous)
         await interaction.response.defer(ephemeral=True, thinking=False)
 
         for _ in range(amount):
             await interaction.channel.send(member.mention)
             await asyncio.sleep(SPAM_DELAY)
 
-        # Ephemeral confirmation (only the staff user sees it)
         await interaction.followup.send("✅ Done.", ephemeral=True)
 
     @spam.error
     async def spam_error(self, interaction: discord.Interaction, error: Exception):
-        # Pick message
         if isinstance(error, app_commands.CheckFailure):
             msg = "❌ Staff only."
         elif isinstance(error, app_commands.CommandOnCooldown):
@@ -71,7 +72,6 @@ class Fun(commands.Cog):
         else:
             msg = "⚠️ Something went wrong."
 
-        # If we already responded/deferred, use followup. Otherwise response.
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
         else:
@@ -108,29 +108,50 @@ class Fun(commands.Cog):
                 "⚠️ I need the **Move Members** permission to run this.", ephemeral=True
             )
 
-        await interaction.response.defer(thinking=False)
-
-        # Suspense
-        cylinder_msg = await interaction.channel.send(
-            f"🔫 {member.mention} spins the cylinder..."
+        # No "thinking..." bubble — we send the real message immediately instead of deferring
+        spin_embed = discord.Embed(
+            title="🔫 Loading the cylinder...",
+            description=f"{member.mention} spins the barrel and points it at their own head.",
+            color=ROULETTE_COLOR_SPIN,
         )
-        await asyncio.sleep(1.5)
+        spin_embed.set_footer(text=f"Chambers: {ROULETTE_CHAMBERS} • 1 is loaded")
+        await interaction.response.send_message(embed=spin_embed)
+        msg = await interaction.original_response()
+
+        # Animated spin — edit a couple times for suspense
+        spin_frames = ["🔄", "🔃", "🔄"]
+        for frame in spin_frames:
+            await asyncio.sleep(0.6)
+            spin_embed.title = f"{frame} Spinning..."
+            await msg.edit(embed=spin_embed)
+
+        await asyncio.sleep(0.8)
 
         chamber = random.randint(1, ROULETTE_CHAMBERS)
-        loaded = (chamber == 1)  # 1-in-N chance
+        loaded = (chamber == 1)
 
         if loaded:
+            result_embed = discord.Embed(
+                title="💥 BANG!",
+                description=f"{member.mention} took the shot and didn't make it.",
+                color=ROULETTE_COLOR_DEATH,
+            )
             try:
                 await member.move_to(None, reason=ROULETTE_KICK_REASON)
-                result = f"💥 **BANG!** {member.mention} got kicked from **{channel.name}**."
+                result_embed.add_field(name="Result", value=f"Kicked from **{channel.name}**", inline=False)
             except discord.Forbidden:
-                result = f"💥 **BANG!** ...but I don't have permission to move {member.mention}."
+                result_embed.add_field(name="Result", value="⚠️ Missing permission to move them.", inline=False)
             except Exception:
-                result = f"💥 **BANG!** ...but something went wrong kicking {member.mention}."
+                result_embed.add_field(name="Result", value="⚠️ Something went wrong.", inline=False)
         else:
-            result = f"🔫 *click.* {member.mention} survives. Lucky."
+            result_embed = discord.Embed(
+                title="🔫 *click.*",
+                description=f"{member.mention} survives. Lucky.",
+                color=ROULETTE_COLOR_SURVIVE,
+            )
 
-        await cylinder_msg.edit(content=result)
+        result_embed.set_footer(text=f"Chamber {chamber} of {ROULETTE_CHAMBERS}")
+        await msg.edit(embed=result_embed)
 
     @roulette.error
     async def roulette_error(self, interaction: discord.Interaction, error: Exception):
