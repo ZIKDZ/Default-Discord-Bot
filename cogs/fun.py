@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
+import random
 
 # ==============================
 # CONFIG — EDIT THIS ONLY
@@ -12,6 +13,12 @@ EXTRA_STAFF_ROLE_IDS = [
 MAX_SPAM = 50
 SPAM_DELAY = 0.01
 COOLDOWN_SECONDS = 15
+
+# --- Roulette config ---
+ROULETTE_STAFF_ONLY = False       # set True to restrict /roulette to staff too
+ROULETTE_CHAMBERS = 6             # 1-in-N odds (6 = classic revolver)
+ROULETTE_COOLDOWN_SECONDS = 10
+ROULETTE_KICK_REASON = "Lost VC roulette 🔫"
 # ==============================
 
 
@@ -65,6 +72,75 @@ class Fun(commands.Cog):
             msg = "⚠️ Something went wrong."
 
         # If we already responded/deferred, use followup. Otherwise response.
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+
+    # ---------- VC Roulette ----------
+
+    @app_commands.command(
+        name="roulette",
+        description=f"Pull the trigger — 1 in {ROULETTE_CHAMBERS} chance you get kicked from VC"
+    )
+    @app_commands.checks.cooldown(1, ROULETTE_COOLDOWN_SECONDS)
+    async def roulette(self, interaction: discord.Interaction):
+        if ROULETTE_STAFF_ONLY and not is_staff(interaction):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+
+        if not interaction.guild:
+            return await interaction.response.send_message(
+                "This only works in a server.", ephemeral=True
+            )
+
+        member = interaction.user
+        voice_state = member.voice
+        if not voice_state or not voice_state.channel:
+            return await interaction.response.send_message(
+                "❌ You need to be in a voice channel to play.", ephemeral=True
+            )
+
+        channel = voice_state.channel
+
+        me = interaction.guild.me
+        if not me or not me.guild_permissions.move_members:
+            return await interaction.response.send_message(
+                "⚠️ I need the **Move Members** permission to run this.", ephemeral=True
+            )
+
+        await interaction.response.defer(thinking=False)
+
+        # Suspense
+        cylinder_msg = await interaction.channel.send(
+            f"🔫 {member.mention} spins the cylinder..."
+        )
+        await asyncio.sleep(1.5)
+
+        chamber = random.randint(1, ROULETTE_CHAMBERS)
+        loaded = (chamber == 1)  # 1-in-N chance
+
+        if loaded:
+            try:
+                await member.move_to(None, reason=ROULETTE_KICK_REASON)
+                result = f"💥 **BANG!** {member.mention} got kicked from **{channel.name}**."
+            except discord.Forbidden:
+                result = f"💥 **BANG!** ...but I don't have permission to move {member.mention}."
+            except Exception:
+                result = f"💥 **BANG!** ...but something went wrong kicking {member.mention}."
+        else:
+            result = f"🔫 *click.* {member.mention} survives. Lucky."
+
+        await cylinder_msg.edit(content=result)
+
+    @roulette.error
+    async def roulette_error(self, interaction: discord.Interaction, error: Exception):
+        if isinstance(error, app_commands.CommandOnCooldown):
+            msg = f"⏳ Reload first… Try again in {round(error.retry_after, 1)}s"
+        elif isinstance(error, app_commands.CheckFailure):
+            msg = "❌ Staff only."
+        else:
+            msg = "⚠️ Something went wrong."
+
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
         else:
