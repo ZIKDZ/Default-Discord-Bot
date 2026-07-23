@@ -37,7 +37,7 @@ def base_embed(color: int) -> discord.Embed:
     return e
 
 def warn_bar(n: int, t: int = BAN_THRESHOLD) -> str:
-    return f"{'🟥' * min(n,t)}{'⬜' * max(t-n,0)}  `{n}/{t}`"
+    return f"{'�' * min(n,t)}{'⬜' * max(t-n,0)}  `{n}/{t}`"
 
 def is_staff(i: discord.Interaction) -> bool:
     if not i.guild: return False
@@ -46,7 +46,7 @@ def is_staff(i: discord.Interaction) -> bool:
 
 def no_perms() -> discord.Embed:
     e = base_embed(COLOR_DANGER)
-    e.description = "🚫 **You don't have permission.**"
+    e.description = "� **You don't have permission.**"
     return e
 
 def _to_ts(iso: str | None) -> int:
@@ -80,6 +80,7 @@ async def _punish(guild: discord.Guild, member: discord.Member,
     """
     Strip admin roles → apply timeout → schedule auto-unpunish.
     Returns a note string if admin roles were stripped, else None.
+    Returns a string starting with ❌ on failure.
     """
     admin_roles = [r for r in member.roles if r.id != guild.id and r.permissions.administrator]
 
@@ -93,7 +94,6 @@ async def _punish(guild: discord.Guild, member: discord.Member,
     try:
         await member.timeout(datetime.now(timezone.utc) + duration, reason=reason)
     except discord.HTTPException as e:
-        # roll back
         if admin_roles:
             try: await member.add_roles(*admin_roles, atomic=False)
             except: pass
@@ -133,16 +133,23 @@ class AutoMod(commands.Cog):
             return await i.response.send_message(embed=no_perms(), ephemeral=True)
         if not i.guild or member.bot or member == i.guild.owner:
             e = base_embed(COLOR_DANGER)
-            e.description = "🚫 Invalid target."
+            e.description = "� Invalid target."
             return await i.response.send_message(embed=e, ephemeral=True)
 
         await i.response.defer()
 
-        if not await db.add_warning(i.guild.id, member.id, i.user.id, reason):
-            e = base_embed(COLOR_DANGER); e.title = "DB error"; e.description = "Warning not saved."
+        if not await db.add_warning(
+            guild_id=i.guild.id,
+            target_id=member.id,
+            moderator_id=i.user.id,
+            reason=reason,
+        ):
+            e = base_embed(COLOR_DANGER)
+            e.title = "DB error"
+            e.description = "Warning not saved."
             return await i.followup.send(embed=e)
 
-        active = await db.get_active_warnings(i.guild.id, member.id)
+        active = await db.get_active_warnings(guild_id=i.guild.id, target_id=member.id)
         count  = len(active)
 
         # DM
@@ -151,8 +158,8 @@ class AutoMod(commands.Cog):
             dm = base_embed(COLOR_WARN)
             dm.title = "⚠️ You received a warning"
             dm.description = f"Warned in **{i.guild.name}**."
-            dm.add_field(name="Reason",        value=reason or "*None*",    inline=False)
-            dm.add_field(name="Warning level", value=warn_bar(count),       inline=False)
+            dm.add_field(name="Reason",        value=reason or "*None*", inline=False)
+            dm.add_field(name="Warning level", value=warn_bar(count),    inline=False)
             if i.guild.icon: dm.set_thumbnail(url=i.guild.icon.url)
             await member.send(embed=dm)
         except discord.Forbidden:
@@ -163,7 +170,7 @@ class AutoMod(commands.Cog):
             me = i.guild.me
             blocked = (
                 "Missing **Ban Members** permission." if not me.guild_permissions.ban_members else
-                "My role is too low."                 if member.top_role >= me.top_role else None
+                "My role is too low."                 if member.top_role >= me.top_role       else None
             )
             e = base_embed(COLOR_DANGER)
             e.set_author(name=str(member), icon_url=member.display_avatar.url)
@@ -174,20 +181,20 @@ class AutoMod(commands.Cog):
                 return await i.followup.send(embed=e)
             try:
                 await i.guild.ban(member, reason=f"AutoMod: {count} warnings by {i.user}")
-                e.title = "🔨 Auto-banned"
+                e.title = "� Auto-banned"
                 e.description = f"{member.mention} reached the warning limit."
-                e.add_field(name="Warning level", value=warn_bar(count),               inline=False)
-                e.add_field(name="Reason",        value=reason or "*None*",            inline=False)
-                e.add_field(name="By",            value=i.user.mention,                inline=True)
-                if not dm_ok: e.add_field(name="Note", value="Couldn't DM member.",   inline=True)
+                e.add_field(name="Warning level", value=warn_bar(count),    inline=False)
+                e.add_field(name="Reason",        value=reason or "*None*", inline=False)
+                e.add_field(name="By",            value=i.user.mention,     inline=True)
+                if not dm_ok: e.add_field(name="Note", value="Couldn't DM member.", inline=True)
             except discord.Forbidden:
                 e.title = "⚠️ Ban failed"
                 e.description = "Discord denied the ban."
             return await i.followup.send(embed=e)
 
         # ── timeout path ─────────────────────────────────────────────────────
-        td   = TIMEOUT_DURATIONS.get(count)
-        note = None
+        td      = TIMEOUT_DURATIONS.get(count)
+        note    = None
         blocked = None
 
         if td:
@@ -195,9 +202,10 @@ class AutoMod(commands.Cog):
             if not me.guild_permissions.moderate_members:
                 blocked = "Missing **Timeout Members** permission."
             else:
-                result = await _punish(i.guild, member, td,
-                                       f"AutoMod: warning #{count} by {i.user}"
-                                       + (f" — {reason}" if reason else ""))
+                result = await _punish(
+                    i.guild, member, td,
+                    f"AutoMod: warning #{count} by {i.user}" + (f" — {reason}" if reason else ""),
+                )
                 if result and result.startswith("❌"):
                     blocked = result
                 else:
@@ -207,11 +215,11 @@ class AutoMod(commands.Cog):
         e.title = "⚠️ Warning issued"
         e.set_author(name=str(member), icon_url=member.display_avatar.url)
         e.set_thumbnail(url=member.display_avatar.url)
-        e.add_field(name="Member",    value=member.mention, inline=True)
-        e.add_field(name="Moderator", value=i.user.mention, inline=True)
-        e.add_field(name="\u200b",    value="\u200b",        inline=True)
-        e.add_field(name="Reason",    value=reason or "*None*",  inline=False)
-        e.add_field(name="Warning level", value=warn_bar(count), inline=False)
+        e.add_field(name="Member",        value=member.mention,    inline=True)
+        e.add_field(name="Moderator",     value=i.user.mention,    inline=True)
+        e.add_field(name="\u200b",        value="\u200b",           inline=True)
+        e.add_field(name="Reason",        value=reason or "*None*", inline=False)
+        e.add_field(name="Warning level", value=warn_bar(count),    inline=False)
         if td and not blocked:
             e.add_field(name="⏱️ Timeout", value=f"Timed out for **{fmt_duration(td)}**.", inline=False)
         if blocked: e.add_field(name="⚠️ Timeout failed", value=blocked, inline=False)
@@ -227,14 +235,15 @@ class AutoMod(commands.Cog):
         if not is_staff(i): return await i.response.send_message(embed=no_perms(), ephemeral=True)
         await i.response.defer(ephemeral=True)
 
-        active = await db.get_active_warnings(i.guild.id, member.id)
+        active = await db.get_active_warnings(guild_id=i.guild.id, target_id=member.id)
         if not active:
-            e = base_embed(COLOR_SUCCESS); e.title = "✅ Clean record"
+            e = base_embed(COLOR_SUCCESS)
+            e.title = "✅ Clean record"
             e.description = f"{member.mention} has no active warnings."
             return await i.followup.send(embed=e, ephemeral=True)
 
         e = base_embed(COLOR_WARN)
-        e.title = f"📋 Warnings — {len(active)}"
+        e.title = f"� Warnings — {len(active)}"
         e.set_author(name=str(member), icon_url=member.display_avatar.url)
         e.set_thumbnail(url=member.display_avatar.url)
         e.add_field(name="Warning level", value=warn_bar(len(active)), inline=False)
@@ -251,10 +260,11 @@ class AutoMod(commands.Cog):
         if not is_staff(i): return await i.response.send_message(embed=no_perms(), ephemeral=True)
         await i.response.defer(ephemeral=True)
 
-        cleared = await db.clear_warnings(i.guild.id, member.id, i.user.id)
-
-        # Always attempt to unpunish regardless of warning count
-        # (covers edge cases where DB was already cleared but punishment remains)
+        cleared = await db.clear_warnings(
+            guild_id=i.guild.id,
+            target_id=member.id,
+            cleared_by=i.user.id,
+        )
         await _unpunish(i.guild, member, reason=f"AutoMod: warnings cleared by {i.user}")
 
         e = base_embed(COLOR_SUCCESS)
@@ -278,7 +288,8 @@ class AutoMod(commands.Cog):
     @clearwarnings.error
     async def on_error(self, i: discord.Interaction, error: app_commands.AppCommandError):
         log.exception("AutoMod error", exc_info=error)
-        e = base_embed(COLOR_DANGER); e.description = "⚠️ Something went wrong."
+        e = base_embed(COLOR_DANGER)
+        e.description = "⚠️ Something went wrong."
         if i.response.is_done(): await i.followup.send(embed=e, ephemeral=True)
         else: await i.response.send_message(embed=e, ephemeral=True)
 
