@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -23,6 +23,22 @@ WARNING_EXPIRY_DAYS = db.WARNING_EXPIRY_DAYS
 
 # How many ACTIVE warnings triggers an automatic ban.
 BAN_THRESHOLD = 3
+
+# Punishment escalation by active warning count.
+# 1st active warning -> 1h timeout, 2nd -> 1 day timeout, 3rd+ -> ban.
+TIMEOUT_DURATIONS: dict[int, timedelta] = {
+    1: timedelta(hours=1),
+    2: timedelta(days=1),
+}
+
+
+def format_duration(td: timedelta) -> str:
+    total_seconds = int(td.total_seconds())
+    if total_seconds % 86400 == 0:
+        days = total_seconds // 86400
+        return f"{days} day" if days == 1 else f"{days} days"
+    hours = total_seconds // 3600
+    return f"{hours} hour" if hours == 1 else f"{hours} hours"
 
 # ---- Brand colors ----
 COLOR_WARN = 0xF2A93B      # amber — a warning was issued
