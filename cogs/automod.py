@@ -37,7 +37,7 @@ def base_embed(color: int) -> discord.Embed:
     return e
 
 def warn_bar(n: int, t: int = BAN_THRESHOLD) -> str:
-    return f"{'�' * min(n,t)}{'⬜' * max(t-n,0)}  `{n}/{t}`"
+    return f"{'🟥' * min(n,t)}{'⬜' * max(t-n,0)}  `{n}/{t}`"
 
 def is_staff(i: discord.Interaction) -> bool:
     if not i.guild: return False
@@ -46,7 +46,7 @@ def is_staff(i: discord.Interaction) -> bool:
 
 def no_perms() -> discord.Embed:
     e = base_embed(COLOR_DANGER)
-    e.description = "� **You don't have permission.**"
+    e.description = "🚫 **You don't have permission.**"
     return e
 
 def _to_ts(iso: str | None) -> int:
@@ -133,7 +133,7 @@ class AutoMod(commands.Cog):
             return await i.response.send_message(embed=no_perms(), ephemeral=True)
         if not i.guild or member.bot or member == i.guild.owner:
             e = base_embed(COLOR_DANGER)
-            e.description = "� Invalid target."
+            e.description = "🚫 Invalid target."
             return await i.response.send_message(embed=e, ephemeral=True)
 
         await i.response.defer()
@@ -181,7 +181,7 @@ class AutoMod(commands.Cog):
                 return await i.followup.send(embed=e)
             try:
                 await i.guild.ban(member, reason=f"AutoMod: {count} warnings by {i.user}")
-                e.title = "� Auto-banned"
+                e.title = "🔨 Auto-banned"
                 e.description = f"{member.mention} reached the warning limit."
                 e.add_field(name="Warning level", value=warn_bar(count),    inline=False)
                 e.add_field(name="Reason",        value=reason or "*None*", inline=False)
@@ -243,7 +243,7 @@ class AutoMod(commands.Cog):
             return await i.followup.send(embed=e, ephemeral=True)
 
         e = base_embed(COLOR_WARN)
-        e.title = f"� Warnings — {len(active)}"
+        e.title = f"📋 Warnings — {len(active)}"
         e.set_author(name=str(member), icon_url=member.display_avatar.url)
         e.set_thumbnail(url=member.display_avatar.url)
         e.add_field(name="Warning level", value=warn_bar(len(active)), inline=False)
