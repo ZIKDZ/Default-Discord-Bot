@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from supabase import create_client, Client
@@ -10,6 +11,8 @@ log = logging.getLogger(__name__)
 
 _client: Optional[Client] = None
 _warned = False
+
+WARNING_EXPIRY_DAYS = 7
 
 
 def get_client() -> Optional[Client]:
@@ -27,7 +30,7 @@ def get_client() -> Optional[Client]:
         if not _warned:
             log.warning(
                 "Supabase not configured (SUPABASE_URL / SUPABASE_KEY missing in .env). "
-                "DM logging and presets will be disabled."
+                "DM logging, presets, and automod warnings will be disabled."
             )
             _warned = True
         return None
@@ -182,3 +185,120 @@ async def delete_preset(*, guild_id: int, name: str) -> bool:
     except Exception:
         log.exception("Failed to delete preset")
         return False
+
+
+# ================================
+#   AutoMod warnings
+# ================================
+#
+# A user's "active" warning count = warnings issued in the last
+# WARNING_EXPIRY_DAYS days that haven't been manually cleared. Each warning
+# ages out independently WARNING_EXPIRY_DAYS after it was given — that's what
+# gives the "no warnings for a week -> level drops" behavior, with no
+# background job needed to decrement anything.
+
+async def add_warning(
+    *,
+    guild_id: int,
+    target_id: int,
+    moderator_id: int,
+    reason: str | None,
+) -> bool:
+    client = get_client()
+    if not client:
+        return False
+
+    payload = {
+        "guild_id": str(guild_id),
+        "target_id": str(target_id),
+        "moderator_id": str(moderator_id),
+        "reason": reason,
+    }
+
+    try:
+        await _run(lambda: client.table("automod_warnings").insert(payload).execute())
+        return True
+    except Exception:
+        log.exception("Failed to insert warning")
+        return False
+
+
+async def get_active_warnings(*, guild_id: int, target_id: int) -> list[dict]:
+    """
+    Returns warnings for this user that are still 'active': not manually
+    cleared, and issued within the last WARNING_EXPIRY_DAYS days.
+    Ordered oldest -> newest.
+    """
+    client = get_client()
+    if not client:
+        return []
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=WARNING_EXPIRY_DAYS)).isoformat()
+
+    try:
+        res = await _run(
+            lambda: client.table("automod_warnings")
+            .select("*")
+            .eq("guild_id", str(guild_id))
+            .eq("target_id", str(target_id))
+            .eq("cleared", False)
+            .gte("created_at", cutoff)
+            .order("created_at")
+            .execute()
+        )
+        return res.data or []
+    except Exception:
+        log.exception("Failed to fetch active warnings")
+        return []
+
+
+async def get_all_warnings(*, guild_id: int, target_id: int) -> list[dict]:
+    """Full warning history for a user (including expired/cleared), newest first."""
+    client = get_client()
+    if not client:
+        return []
+
+    try:
+        res = await _run(
+            lambda: client.table("automod_warnings")
+            .select("*")
+            .eq("guild_id", str(guild_id))
+            .eq("target_id", str(target_id))
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return res.data or []
+    except Exception:
+        log.exception("Failed to fetch warning history")
+        return []
+
+
+async def clear_warnings(*, guild_id: int, target_id: int, cleared_by: int) -> int:
+    """Marks all currently-active warnings as cleared. Returns how many were cleared."""
+    client = get_client()
+    if not client:
+        return 0
+
+    active = await get_active_warnings(guild_id=guild_id, target_id=target_id)
+    if not active:
+        return 0
+
+    ids = [row["id"] for row in active]
+
+    try:
+        await _run(
+            lambda: client.table("automod_warnings")
+            .update(
+                {
+                    "cleared": True,
+                    "cleared_by": str(cleared_by),
+                    "cleared_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            .in_("id", ids)
+            .execute()
+        )
+        return len(ids)
+    except Exception:
+        log.exception("Failed to clear warnings")
+        return 0
