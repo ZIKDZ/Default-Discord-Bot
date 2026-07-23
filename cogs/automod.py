@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -10,14 +11,11 @@ from core import supabase_client as db
 log = logging.getLogger(__name__)
 
 # ==========================================================
-
 # EDIT THIS LIST ONLY
-
 EXTRA_ALLOWED_ROLE_IDS = [
     1141838188650967200,
 ]
 # ==========================================================
-
 
 WARNING_EXPIRY_DAYS = db.WARNING_EXPIRY_DAYS
 BAN_THRESHOLD = 3
@@ -38,7 +36,6 @@ def format_duration(td: timedelta) -> str:
 
 
 # ---- Brand colors ----
-
 COLOR_WARN    = 0xF2A93B
 COLOR_DANGER  = 0xE0405A
 COLOR_SUCCESS = 0x57C785
@@ -49,11 +46,8 @@ FOOTER_TEXT = "AutoMod"
 
 
 # ================================
-
 #   Visual helpers
-
 # ================================
-
 
 def _base_embed(color: int) -> discord.Embed:
     embed = discord.Embed(color=color, timestamp=datetime.now(timezone.utc))
@@ -96,13 +90,65 @@ def _to_ts(iso_str: str | None) -> int:
 
 
 # ================================
-
 #   Timeout helper
-
 # ================================
+
+async def _restore_roles_after_timeout(
+    guild: discord.Guild,
+    member_id: int,
+    roles: list[discord.Role],
+    duration: timedelta,
+) -> None:
+    """
+    Waits for *duration* then re-adds *roles* to the member.
+    Runs as a background task — fires and forgets from the command handler.
+    If the member left or the roles vanished nothing breaks, errors are just logged.
+    """
+    await asyncio.sleep(duration.total_seconds())
+
+    try:
+        # Re-fetch so we have a fresh Member object after the sleep.
+        member = await guild.fetch_member(member_id)
+    except discord.NotFound:
+        log.info(
+            "AUTOMOD role-restore: member %s left the guild before roles could be restored.",
+            member_id,
+        )
+        return
+    except discord.HTTPException as exc:
+        log.warning("AUTOMOD role-restore: could not fetch member %s: %s", member_id, exc)
+        return
+
+    # Only restore roles that still exist in the guild.
+    guild_role_ids = {r.id for r in guild.roles}
+    roles_to_restore = [r for r in roles if r.id in guild_role_ids]
+
+    if not roles_to_restore:
+        log.info("AUTOMOD role-restore: no roles left to restore for %s.", member)
+        return
+
+    try:
+        await member.add_roles(
+            *roles_to_restore,
+            reason="AutoMod: restoring admin role(s) after timeout expired",
+            atomic=False,
+        )
+        log.info(
+            "AUTOMOD role-restore: restored %s to %s after timeout.",
+            [r.name for r in roles_to_restore],
+            member,
+        )
+    except discord.HTTPException as exc:
+        log.warning(
+            "AUTOMOD role-restore FAILED for %s: %s — roles must be restored manually: %s",
+            member,
+            exc,
+            [r.name for r in roles_to_restore],
+        )
 
 
 async def _apply_timeout(
+    guild: discord.Guild,
     member: discord.Member,
     duration: timedelta,
     reason: str,
@@ -110,40 +156,26 @@ async def _apply_timeout(
     """
     Times out *member* for *duration*.
 
-    If the member holds the Administrator permission through one or more roles,
-    those roles are temporarily stripped so Discord allows the timeout, then
-    immediately restored.  The roles that were removed are logged.
+    If the member holds Administrator through any role those roles are stripped
+    first (so Discord accepts the timeout), and a background task is scheduled
+    to restore them only after the full timeout period has elapsed.
 
     Returns:
         (success: bool, note: str | None)
-        *note* is a human-readable string describing what extra steps were
-        taken (e.g. which roles were removed), or None if nothing unusual happened.
     """
 
-    # ------------------------------------------------------------------ #
-
-    # 1. Collect every role that grants Administrator (skip @everyone).   #
-
-    # ------------------------------------------------------------------ #
-
+    # 1. Find every role that grants Administrator (skip @everyone).
     admin_roles: list[discord.Role] = [
         r for r in member.roles
-        if r.id != member.guild.id and r.permissions.administrator
+        if r.id != guild.id and r.permissions.administrator
     ]
 
-    note: str | None = None
-
-    # ------------------------------------------------------------------ #
-
-    # 2. Strip admin roles so the timeout API call is accepted.           #
-
-    # ------------------------------------------------------------------ #
-
+    # 2. Strip admin roles so Discord accepts the timeout call.
     if admin_roles:
         try:
             await member.remove_roles(
                 *admin_roles,
-                reason="AutoMod: temporarily removing admin role(s) to apply timeout",
+                reason="AutoMod: removing admin role(s) to apply timeout — will be restored after timeout expires",
                 atomic=False,
             )
             log.info(
@@ -156,85 +188,42 @@ async def _apply_timeout(
         except discord.HTTPException as exc:
             return False, f"Failed to remove admin role(s): {exc}"
 
-    # ------------------------------------------------------------------ #
-
-    # 3. Apply the actual timeout.                                        #
-
-    # ------------------------------------------------------------------ #
-
+    # 3. Apply the timeout.
     try:
         until = datetime.now(timezone.utc) + duration
         await member.timeout(until, reason=reason)
         log.info("AUTOMOD timeout: %s for %s", member, format_duration(duration))
-    except discord.Forbidden:
-        # Restore roles before giving up so the member isn't left role-less.
-
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        # Restore roles immediately if the timeout itself failed so the member
+        # is not left role-less for no reason.
         if admin_roles:
             try:
                 await member.add_roles(
                     *admin_roles,
-                    reason="AutoMod: restoring admin role(s) after failed timeout",
+                    reason="AutoMod: restoring admin role(s) — timeout could not be applied",
                     atomic=False,
                 )
             except discord.HTTPException:
                 pass
-        return False, "Discord denied the timeout request (missing permission or role hierarchy)."
-    except discord.HTTPException as exc:
-        if admin_roles:
-            try:
-                await member.add_roles(
-                    *admin_roles,
-                    reason="AutoMod: restoring admin role(s) after failed timeout",
-                    atomic=False,
-                )
-            except discord.HTTPException:
-                pass
-        return False, f"Timeout request failed: {exc}"
+        reason_text = "Discord denied the timeout request." if isinstance(exc, discord.Forbidden) else str(exc)
+        return False, reason_text
 
-    # ------------------------------------------------------------------ #
-
-    # 4. Re-add the admin roles (Discord ignores the timeout for admins   #
-
-    #    but the roles are legitimately theirs, so we give them back).    #
-
-    #    The timeout will still show in audit log / be stored server-side #
-
-    #    until they lose the admin role again, which is fine for our      #
-
-    #    purposes of recording the moderation action.                     #
-
-    # ------------------------------------------------------------------ #
-
+    # 4. Schedule role restoration AFTER the timeout expires.
+    #    We do NOT await this — it runs in the background.
     if admin_roles:
-        try:
-            await member.add_roles(
-                *admin_roles,
-                reason="AutoMod: restoring admin role(s) after timeout was applied",
-                atomic=False,
-            )
-            role_names = ", ".join(f"`{r.name}`" for r in admin_roles)
-            note = (
-                f"⚠️ Member had administrator role(s) ({role_names}). "
-                "They were temporarily removed to apply the timeout, then restored."
-            )
-            log.info(
-                "AUTOMOD timeout-restore: re-added admin role(s) %s to %s",
-                [r.name for r in admin_roles],
-                member,
-            )
-        except discord.HTTPException as exc:
-            role_names = ", ".join(f"`{r.name}`" for r in admin_roles)
-            note = (
-                f"⚠️ Could not restore admin role(s) ({role_names}) after timeout: {exc}. "
-                "Please restore them manually."
-            )
-            log.warning(
-                "AUTOMOD timeout-restore FAILED for %s: %s",
-                member,
-                exc,
-            )
+        asyncio.get_event_loop().create_task(
+            _restore_roles_after_timeout(guild, member.id, admin_roles, duration),
+            name=f"automod-role-restore-{member.id}",
+        )
+        role_names = ", ".join(f"`{r.name}`" for r in admin_roles)
+        note = (
+            f"⚠️ Member had administrator role(s) ({role_names}). "
+            f"They were removed for the duration of the timeout and will be "
+            f"automatically restored in **{format_duration(duration)}**."
+        )
+        return True, note
 
-    return True, note
+    return True, None
 
 
 class AutoMod(commands.Cog):
@@ -244,11 +233,8 @@ class AutoMod(commands.Cog):
     warn_group = app_commands.Group(name="warn", description="Warning system (staff only)")
 
     # ================================================================== #
-
     #   /warn add                                                         #
-
     # ================================================================== #
-
 
     @warn_group.command(name="add", description="Warn a member. 3 active warnings = auto-ban.")
     @app_commands.describe(member="Member to warn", reason="Reason for the warning")
@@ -276,7 +262,6 @@ class AutoMod(commands.Cog):
         await interaction.response.defer(ephemeral=False)
 
         # ---- save to DB ------------------------------------------------ #
-
         saved = await db.add_warning(
             guild_id=interaction.guild.id,
             target_id=member.id,
@@ -303,7 +288,6 @@ class AutoMod(commands.Cog):
         )
 
         # ---- DM the member (best-effort) ------------------------------- #
-
         dm_sent = True
         try:
             dm_embed = _base_embed(COLOR_WARN)
@@ -326,11 +310,8 @@ class AutoMod(commands.Cog):
             dm_sent = False
 
         # ================================================================ #
-
         #   BAN PATH (3rd+ warning)                                        #
-
         # ================================================================ #
-
         if count >= BAN_THRESHOLD:
             me = interaction.guild.me
             if not me or not me.guild_permissions.ban_members:
@@ -369,9 +350,9 @@ class AutoMod(commands.Cog):
                 embed.description = (
                     f"{member.mention} reached the warning limit and has been **banned**."
                 )
-                embed.add_field(name="Warning level",  value=warning_bar(count),              inline=False)
+                embed.add_field(name="Warning level",  value=warning_bar(count),               inline=False)
                 embed.add_field(name="Final reason",   value=reason or "*No reason provided*", inline=False)
-                embed.add_field(name="Banned by",      value=interaction.user.mention,         inline=True)
+                embed.add_field(name="Banned by",      value=interaction.user.mention,          inline=True)
                 if not dm_sent:
                     embed.add_field(
                         name="Note",
@@ -390,36 +371,26 @@ class AutoMod(commands.Cog):
                 return await interaction.followup.send(embed=embed)
 
         # ================================================================ #
-
         #   TIMEOUT PATH (1st and 2nd warning)                             #
-
         # ================================================================ #
-
         timeout_duration = TIMEOUT_DURATIONS.get(count)
         timeout_applied  = False
         timeout_note: str | None = None
-        timeout_blocked: str | None = None  # human-readable reason if we couldn't time out
-
+        timeout_blocked: str | None = None
 
         if timeout_duration is not None:
             me = interaction.guild.me
-
-            # Check bot permissions and hierarchy before attempting.
-
             if not me or not me.guild_permissions.moderate_members:
                 timeout_blocked = "I'm missing the **Timeout Members** permission."
-            elif member == interaction.guild.owner:
-                # Already blocked above, but just in case.
-
-                timeout_blocked = "Cannot timeout the server owner."
             else:
                 timeout_applied, timeout_note = await _apply_timeout(
+                    interaction.guild,
                     member,
                     timeout_duration,
                     reason=(
-                        f"AutoMod: warning #{count} "
-                        f"(by {interaction.user})"
+                        f"AutoMod: warning #{count}"
                         + (f" — {reason}" if reason else "")
+                        + f" (by {interaction.user})"
                     ),
                 )
                 if not timeout_applied and timeout_note:
@@ -427,7 +398,6 @@ class AutoMod(commands.Cog):
                     timeout_note    = None
 
         # ---- Build the public confirmation embed ----------------------- #
-
         embed = _base_embed(COLOR_WARN)
         embed.title = "⚠️ Warning issued"
         embed.set_author(name=str(member), icon_url=member.display_avatar.url)
@@ -435,8 +405,6 @@ class AutoMod(commands.Cog):
 
         embed.add_field(name="Member",    value=member.mention,           inline=True)
         embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
-        # Spacer keeps the two-column row tidy.
-
         embed.add_field(name="\u200b",    value="\u200b",                 inline=True)
 
         embed.add_field(
@@ -445,8 +413,6 @@ class AutoMod(commands.Cog):
             inline=False,
         )
         embed.add_field(name="Warning level", value=warning_bar(count), inline=False)
-
-        # Timeout field.
 
         if timeout_applied and timeout_duration:
             embed.add_field(
@@ -461,8 +427,6 @@ class AutoMod(commands.Cog):
                 inline=False,
             )
 
-        # Extra note about admin role manipulation.
-
         if timeout_note:
             embed.add_field(name="ℹ️ Additional info", value=timeout_note, inline=False)
 
@@ -476,11 +440,8 @@ class AutoMod(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     # ================================================================== #
-
     #   /warn list                                                        #
-
     # ================================================================== #
-
 
     @warn_group.command(name="list", description="Show a member's active warnings")
     @app_commands.describe(member="Member to check")
@@ -528,11 +489,8 @@ class AutoMod(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ================================================================== #
-
     #   /warn clear                                                       #
-
     # ================================================================== #
-
 
     @warn_group.command(name="clear", description="Clear all active warnings for a member")
     @app_commands.describe(member="Member to clear warnings for")
@@ -577,11 +535,8 @@ class AutoMod(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ================================================================== #
-
     #   Error handler                                                     #
-
     # ================================================================== #
-
 
     @warn_add.error
     @warn_list.error
