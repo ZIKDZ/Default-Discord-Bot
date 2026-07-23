@@ -101,13 +101,11 @@ async def _restore_roles_after_timeout(
 ) -> None:
     """
     Waits for *duration* then re-adds *roles* to the member.
-    Runs as a background task — fires and forgets from the command handler.
-    If the member left or the roles vanished nothing breaks, errors are just logged.
+    Runs as a fire-and-forget background task.
     """
     await asyncio.sleep(duration.total_seconds())
 
     try:
-        # Re-fetch so we have a fresh Member object after the sleep.
         member = await guild.fetch_member(member_id)
     except discord.NotFound:
         log.info(
@@ -119,9 +117,8 @@ async def _restore_roles_after_timeout(
         log.warning("AUTOMOD role-restore: could not fetch member %s: %s", member_id, exc)
         return
 
-    # Only restore roles that still exist in the guild.
-    guild_role_ids = {r.id for r in guild.roles}
-    roles_to_restore = [r for r in roles if r.id in guild_role_ids]
+    guild_role_ids    = {r.id for r in guild.roles}
+    roles_to_restore  = [r for r in roles if r.id in guild_role_ids]
 
     if not roles_to_restore:
         log.info("AUTOMOD role-restore: no roles left to restore for %s.", member)
@@ -141,9 +138,7 @@ async def _restore_roles_after_timeout(
     except discord.HTTPException as exc:
         log.warning(
             "AUTOMOD role-restore FAILED for %s: %s — roles must be restored manually: %s",
-            member,
-            exc,
-            [r.name for r in roles_to_restore],
+            member, exc, [r.name for r in roles_to_restore],
         )
 
 
@@ -157,8 +152,8 @@ async def _apply_timeout(
     Times out *member* for *duration*.
 
     If the member holds Administrator through any role those roles are stripped
-    first (so Discord accepts the timeout), and a background task is scheduled
-    to restore them only after the full timeout period has elapsed.
+    first so Discord accepts the timeout, then a background task restores them
+    only after the full timeout period has elapsed.
 
     Returns:
         (success: bool, note: str | None)
@@ -180,8 +175,7 @@ async def _apply_timeout(
             )
             log.info(
                 "AUTOMOD timeout-prep: removed admin role(s) %s from %s",
-                [r.name for r in admin_roles],
-                member,
+                [r.name for r in admin_roles], member,
             )
         except discord.Forbidden:
             return False, "Couldn't remove the member's administrator role(s) — check role hierarchy."
@@ -194,8 +188,7 @@ async def _apply_timeout(
         await member.timeout(until, reason=reason)
         log.info("AUTOMOD timeout: %s for %s", member, format_duration(duration))
     except (discord.Forbidden, discord.HTTPException) as exc:
-        # Restore roles immediately if the timeout itself failed so the member
-        # is not left role-less for no reason.
+        # Restore roles immediately if the timeout itself failed.
         if admin_roles:
             try:
                 await member.add_roles(
@@ -205,11 +198,14 @@ async def _apply_timeout(
                 )
             except discord.HTTPException:
                 pass
-        reason_text = "Discord denied the timeout request." if isinstance(exc, discord.Forbidden) else str(exc)
+        reason_text = (
+            "Discord denied the timeout request."
+            if isinstance(exc, discord.Forbidden) else str(exc)
+        )
         return False, reason_text
 
     # 4. Schedule role restoration AFTER the timeout expires.
-    #    We do NOT await this — it runs in the background.
+    #    Roles are NOT given back until the full duration has passed.
     if admin_roles:
         asyncio.get_event_loop().create_task(
             _restore_roles_after_timeout(guild, member.id, admin_roles, duration),
@@ -230,15 +226,13 @@ class AutoMod(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    warn_group = app_commands.Group(name="warn", description="Warning system (staff only)")
-
     # ================================================================== #
-    #   /warn add                                                         #
+    #   /warn                                                             #
     # ================================================================== #
 
-    @warn_group.command(name="add", description="Warn a member. 3 active warnings = auto-ban.")
+    @app_commands.command(name="warn", description="Warn a member. 3 active warnings = auto-ban.")
     @app_commands.describe(member="Member to warn", reason="Reason for the warning")
-    async def warn_add(
+    async def warn(
         self,
         interaction: discord.Interaction,
         member: discord.Member,
@@ -397,7 +391,7 @@ class AutoMod(commands.Cog):
                     timeout_blocked = timeout_note
                     timeout_note    = None
 
-        # ---- Build the public confirmation embed ----------------------- #
+        # ---- confirmation embed ---------------------------------------- #
         embed = _base_embed(COLOR_WARN)
         embed.title = "⚠️ Warning issued"
         embed.set_author(name=str(member), icon_url=member.display_avatar.url)
@@ -440,12 +434,12 @@ class AutoMod(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     # ================================================================== #
-    #   /warn list                                                        #
+    #   /warnings                                                         #
     # ================================================================== #
 
-    @warn_group.command(name="list", description="Show a member's active warnings")
+    @app_commands.command(name="warnings", description="Show a member's active warnings.")
     @app_commands.describe(member="Member to check")
-    async def warn_list(self, interaction: discord.Interaction, member: discord.Member):
+    async def warnings(self, interaction: discord.Interaction, member: discord.Member):
         if not is_staff(interaction):
             return await interaction.response.send_message(
                 embed=permission_denied_embed(), ephemeral=True
@@ -489,12 +483,12 @@ class AutoMod(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ================================================================== #
-    #   /warn clear                                                       #
+    #   /clearwarnings                                                    #
     # ================================================================== #
 
-    @warn_group.command(name="clear", description="Clear all active warnings for a member")
+    @app_commands.command(name="clearwarnings", description="Clear all active warnings for a member.")
     @app_commands.describe(member="Member to clear warnings for")
-    async def warn_clear(self, interaction: discord.Interaction, member: discord.Member):
+    async def clearwarnings(self, interaction: discord.Interaction, member: discord.Member):
         if not is_staff(interaction):
             return await interaction.response.send_message(
                 embed=permission_denied_embed(), ephemeral=True
@@ -538,10 +532,10 @@ class AutoMod(commands.Cog):
     #   Error handler                                                     #
     # ================================================================== #
 
-    @warn_add.error
-    @warn_list.error
-    @warn_clear.error
-    async def warn_error(
+    @warn.error
+    @warnings.error
+    @clearwarnings.error
+    async def command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):
         log.exception("AutoMod command error", exc_info=error)
