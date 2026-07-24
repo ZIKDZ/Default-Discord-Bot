@@ -43,13 +43,13 @@ def base_embed(color: int = BOT_COLOR) -> discord.Embed:
 
 def no_perms_embed() -> discord.Embed:
     e = base_embed(DANGER_COLOR)
-    e.description = "🚫 **You don't have permission to do that.**"
+    e.description = "� **You don't have permission to do that.**"
     return e
 
 
 def not_your_channel_embed() -> discord.Embed:
     e = base_embed(DANGER_COLOR)
-    e.description = "🚫 **You don't own a temp voice channel right now.**\nJoin the hub channel to create one."
+    e.description = "� **You don't own a temp voice channel right now.**\nJoin the hub channel to create one."
     return e
 
 
@@ -122,8 +122,7 @@ def build_panel_embed(channel: discord.VoiceChannel, owner: discord.abc.User) ->
     e.set_author(name="Welcome to your own temporary voice channel", icon_url=BRAND_ICON)
     e.description = (
         "Control your channel using the menus below\n"
-        "• Use the dropdowns to manage settings and permissions\n"
-        "• Alternatively use `/voice` commands\n\n"
+        "• Use the dropdowns to manage settings and permissions\n\n"
         f"**Owner:** {owner.mention}\n"
         f"**Channel:** {channel.mention}"
     )
@@ -135,10 +134,14 @@ class ChannelSettingsSelect(discord.ui.Select):
     def __init__(self):
         options = [
             discord.SelectOption(label="Name", description="Change the channel name", emoji="✏️", value="name"),
-            discord.SelectOption(label="Limit", description="Change the channel limit", emoji="👥", value="limit"),
-            discord.SelectOption(label="Claim", description="Claim ownership of the channel", emoji="👑", value="claim"),
-            discord.SelectOption(label="Transfer", description="Transfer ownership to another user", emoji="🔄", value="transfer"),
-            discord.SelectOption(label="Load Settings", description="Apply your saved profile to this channel", emoji="📥", value="load"),
+            discord.SelectOption(label="Limit", description="Change the channel limit", emoji="�", value="limit"),
+            discord.SelectOption(label="Status", description="Set a custom voice channel status", emoji="�", value="status"),
+            discord.SelectOption(label="Game", description="Change the channel name to the game you're playing", emoji="�", value="game"),
+            discord.SelectOption(label="Bitrate", description="Change the channel bitrate", emoji="�️", value="bitrate"),
+            discord.SelectOption(label="Region", description="Change the channel voice region", emoji="�", value="region"),
+            discord.SelectOption(label="Claim", description="Claim ownership of the channel", emoji="�", value="claim"),
+            discord.SelectOption(label="Transfer", description="Transfer ownership to another user", emoji="�", value="transfer"),
+            discord.SelectOption(label="Load Settings", description="Apply your saved profile to this channel", emoji="�", value="load"),
         ]
         super().__init__(placeholder="Change channel settings", options=options, min_values=1, max_values=1, row=0)
 
@@ -150,12 +153,13 @@ class ChannelSettingsSelect(discord.ui.Select):
 class ChannelPermissionsSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Lock", description="Lock the channel", emoji="🔒", value="lock"),
-            discord.SelectOption(label="Unlock", description="Unlock the channel", emoji="🔓", value="unlock"),
+            discord.SelectOption(label="Lock", description="Lock the channel", emoji="�", value="lock"),
+            discord.SelectOption(label="Unlock", description="Unlock the channel", emoji="�", value="unlock"),
             discord.SelectOption(label="Permit", description="Permit a user/role to access the channel", emoji="✅", value="permit"),
             discord.SelectOption(label="Reject", description="Reject/kick a user/role from the channel", emoji="⛔", value="reject"),
-            discord.SelectOption(label="Ghost", description="Make your channel invisible", emoji="👻", value="ghost"),
-            discord.SelectOption(label="Unghost", description="Make your channel visible", emoji="👁️", value="unghost"),
+            discord.SelectOption(label="Invite", description="Invite a user to access the channel", emoji="�", value="invite"),
+            discord.SelectOption(label="Ghost", description="Make your channel invisible", emoji="�", value="ghost"),
+            discord.SelectOption(label="Unghost", description="Make your channel visible", emoji="�️", value="unghost"),
         ]
         super().__init__(placeholder="Change channel permissions", options=options, min_values=1, max_values=1, row=1)
 
@@ -206,7 +210,7 @@ class LimitModal(discord.ui.Modal, title="Set User Limit"):
     async def on_submit(self, interaction: discord.Interaction):
         raw = str(self.limit.value).strip()
         if not raw.isdigit() or not (0 <= int(raw) <= 99):
-            error_embed = discord.Embed(description="🚫 Enter a number between 0 and 99.", color=DANGER_COLOR)
+            error_embed = discord.Embed(description="� Enter a number between 0 and 99.", color=DANGER_COLOR)
             return await interaction.response.send_message(embed=error_embed, ephemeral=True)
         await self.cog.do_limit(interaction, self.channel, int(raw))
 
@@ -226,6 +230,25 @@ class UserOrRoleModal(discord.ui.Modal):
         await self.cog.do_permit_reject(interaction, self.channel, self.action, str(self.target.value))
 
 
+class InviteModal(discord.ui.Modal, title="Invite User"):
+    target = discord.ui.TextInput(
+        label="User", placeholder="@mention, ID, or exact name", max_length=100, required=True
+    )
+
+    def __init__(self, cog: "VoiceMaster", channel: discord.VoiceChannel):
+        super().__init__()
+        self.cog = cog
+        self.channel = channel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        target = VoiceMaster.resolve_member_or_role(interaction.guild, str(self.target.value))
+        if not isinstance(target, discord.Member):
+            return await interaction.response.send_message(
+                f"� Couldn't find a member matching `{self.target.value}`.", ephemeral=True
+            )
+        await self.cog.do_invite(interaction, self.channel, target)
+
+
 class TransferModal(discord.ui.Modal, title="Transfer Ownership"):
     target = discord.ui.TextInput(label="New owner (@mention, ID, or name)", max_length=100, required=True)
 
@@ -236,6 +259,93 @@ class TransferModal(discord.ui.Modal, title="Transfer Ownership"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.do_transfer(interaction, self.channel, str(self.target.value))
+
+
+class StatusModal(discord.ui.Modal, title="Set Voice Status"):
+    status = discord.ui.TextInput(
+        label="Status",
+        placeholder="e.g. � Playing ranked  (leave blank to clear)",
+        max_length=500,
+        required=False,
+    )
+
+    def __init__(self, cog: "VoiceMaster", channel: discord.VoiceChannel):
+        super().__init__()
+        self.cog = cog
+        self.channel = channel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.do_status(interaction, self.channel, str(self.status.value))
+
+
+class GameModal(discord.ui.Modal, title="Set Channel Name to Game"):
+    game = discord.ui.TextInput(label="Game name", max_length=90, required=True, placeholder="e.g. Valorant")
+
+    def __init__(self, cog: "VoiceMaster", channel: discord.VoiceChannel):
+        super().__init__()
+        self.cog = cog
+        self.channel = channel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.do_rename(interaction, self.channel, f"� {str(self.game.value).strip()}")
+
+
+class BitrateModal(discord.ui.Modal, title="Set Bitrate"):
+    bitrate = discord.ui.TextInput(
+        label="Bitrate in kbps (8-96, up to 384 boosted)", max_length=3, required=True, placeholder="64"
+    )
+
+    def __init__(self, cog: "VoiceMaster", channel: discord.VoiceChannel):
+        super().__init__()
+        self.cog = cog
+        self.channel = channel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = str(self.bitrate.value).strip()
+        if not raw.isdigit():
+            error_embed = discord.Embed(description="� Enter a whole number of kbps.", color=DANGER_COLOR)
+            return await interaction.response.send_message(embed=error_embed, ephemeral=True)
+        await self.cog.do_bitrate(interaction, self.channel, int(raw))
+
+
+# Discord's standard fixed voice region set (id, display label)
+VOICE_REGIONS = [
+    ("automatic", "Automatic"),
+    ("us-west", "US West"),
+    ("us-east", "US East"),
+    ("us-central", "US Central"),
+    ("us-south", "US South"),
+    ("brazil", "Brazil"),
+    ("hongkong", "Hong Kong"),
+    ("india", "India"),
+    ("japan", "Japan"),
+    ("rotterdam", "Rotterdam"),
+    ("russia", "Russia"),
+    ("singapore", "Singapore"),
+    ("southafrica", "South Africa"),
+    ("sydney", "Sydney"),
+    ("south-korea", "South Korea"),
+]
+
+
+class RegionSelect(discord.ui.Select):
+    def __init__(self, cog: "VoiceMaster", channel: discord.VoiceChannel):
+        self.cog = cog
+        self.channel = channel
+        options = [
+            discord.SelectOption(label=label, value=region_id)
+            for region_id, label in VOICE_REGIONS
+        ]
+        super().__init__(placeholder="Choose a voice region", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.do_region(interaction, self.channel, self.values[0])
+
+
+class RegionSelectView(discord.ui.View):
+    def __init__(self, cog: "VoiceMaster", channel: discord.VoiceChannel):
+        super().__init__(timeout=120)
+        self.add_item(RegionSelect(cog, channel))
 
 
 # ================================================================
@@ -500,7 +610,7 @@ class VoiceMaster(commands.Cog):
 
             try:
                 e = base_embed(BOT_COLOR)
-                e.description = f"👑 {new_owner.mention} is now the owner of this channel (previous owner left)."
+                e.description = f"� {new_owner.mention} is now the owner of this channel (previous owner left)."
                 await channel.send(embed=e)
             except discord.HTTPException:
                 pass
@@ -543,6 +653,16 @@ class VoiceMaster(commands.Cog):
             return await interaction.response.send_modal(LimitModal(self, channel))
         if action == "transfer":
             return await interaction.response.send_modal(TransferModal(self, channel))
+        if action == "status":
+            return await interaction.response.send_modal(StatusModal(self, channel))
+        if action == "game":
+            return await interaction.response.send_modal(GameModal(self, channel))
+        if action == "bitrate":
+            return await interaction.response.send_modal(BitrateModal(self, channel))
+        if action == "region":
+            return await interaction.response.send_message(
+                "� Pick a voice region:", view=RegionSelectView(self, channel), ephemeral=True
+            )
 
     async def handle_permissions_action(self, interaction: discord.Interaction, action: str):
         channel, row = await self._require_ownership(interaction)
@@ -565,6 +685,8 @@ class VoiceMaster(commands.Cog):
             return await interaction.response.send_modal(
                 UserOrRoleModal(self, channel, "reject", "Reject User/Role")
             )
+        if action == "invite":
+            return await interaction.response.send_modal(InviteModal(self, channel))
 
     # ---------------------------------------------------------
     #   Actions (shared by dropdowns AND slash commands)
@@ -573,7 +695,7 @@ class VoiceMaster(commands.Cog):
     async def do_rename(self, interaction: discord.Interaction, channel: discord.VoiceChannel, name: str):
         name = name.strip()[:100]
         if not name:
-            return await interaction.response.send_message("🚫 Name can't be empty.", ephemeral=True)
+            return await interaction.response.send_message("� Name can't be empty.", ephemeral=True)
         try:
             await channel.edit(name=name, reason=f"VoiceMaster: renamed by {interaction.user}")
         except discord.HTTPException as e:
@@ -590,7 +712,48 @@ class VoiceMaster(commands.Cog):
             return await interaction.response.send_message(f"⚠️ Couldn't set limit: {e}", ephemeral=True)
         await db.save_profile(guild_id=interaction.guild.id, user_id=interaction.user.id, user_limit=limit)
         e = base_embed(SUCCESS_COLOR)
-        e.description = f"👥 User limit set to **{limit if limit else 'unlimited'}**."
+        e.description = f"� User limit set to **{limit if limit else 'unlimited'}**."
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    async def do_status(self, interaction: discord.Interaction, channel: discord.VoiceChannel, status: str):
+        status = status.strip()[:500]
+        # No public wrapper exists on VoiceChannel for this endpoint yet, so we
+        # call the route directly the same way discord.py does internally.
+        route = discord.http.Route(
+            "PUT", "/channels/{channel_id}/voice-status", channel_id=channel.id
+        )
+        try:
+            await channel._state.http.request(route, json={"status": status})
+        except discord.HTTPException as e:
+            return await interaction.response.send_message(f"⚠️ Couldn't set status: {e}", ephemeral=True)
+
+        e = base_embed(SUCCESS_COLOR)
+        e.description = f"� Status set to **{status}**." if status else "� Status cleared."
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    async def do_bitrate(self, interaction: discord.Interaction, channel: discord.VoiceChannel, kbps: int):
+        guild = channel.guild
+        max_kbps = 384 if "VIP_REGIONS" in guild.features else (
+            128 if guild.premium_tier >= 2 else (96 if guild.premium_tier >= 1 else 96)
+        )
+        kbps = max(8, min(kbps, max_kbps))
+        try:
+            await channel.edit(bitrate=kbps * 1000, reason=f"VoiceMaster: bitrate set by {interaction.user}")
+        except discord.HTTPException as e:
+            return await interaction.response.send_message(f"⚠️ Couldn't set bitrate: {e}", ephemeral=True)
+        e = base_embed(SUCCESS_COLOR)
+        e.description = f"�️ Bitrate set to **{kbps} kbps**."
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    async def do_region(self, interaction: discord.Interaction, channel: discord.VoiceChannel, region_id: str):
+        rtc_region = None if region_id == "automatic" else region_id
+        try:
+            await channel.edit(rtc_region=rtc_region, reason=f"VoiceMaster: region set by {interaction.user}")
+        except discord.HTTPException as e:
+            return await interaction.response.send_message(f"⚠️ Couldn't set region: {e}", ephemeral=True)
+        label = dict(VOICE_REGIONS).get(region_id, region_id)
+        e = base_embed(SUCCESS_COLOR)
+        e.description = f"� Voice region set to **{label}**."
         await interaction.response.send_message(embed=e, ephemeral=True)
 
     async def do_lock(self, interaction: discord.Interaction, channel: discord.VoiceChannel, row: dict, *, locked: bool):
@@ -607,7 +770,7 @@ class VoiceMaster(commands.Cog):
         await db.update_temp_channel(channel_id=channel.id, locked=locked)
         await db.save_profile(guild_id=interaction.guild.id, user_id=interaction.user.id, locked=locked)
         e = base_embed(SUCCESS_COLOR)
-        e.description = f"{'🔒 Channel locked.' if locked else '🔓 Channel unlocked.'}"
+        e.description = f"{'� Channel locked.' if locked else '� Channel unlocked.'}"
         await interaction.response.send_message(embed=e, ephemeral=True)
 
     async def do_ghost(self, interaction: discord.Interaction, channel: discord.VoiceChannel, row: dict, *, ghosted: bool):
@@ -624,7 +787,7 @@ class VoiceMaster(commands.Cog):
         await db.update_temp_channel(channel_id=channel.id, ghosted=ghosted)
         await db.save_profile(guild_id=interaction.guild.id, user_id=interaction.user.id, ghosted=ghosted)
         e = base_embed(SUCCESS_COLOR)
-        e.description = f"{'👻 Channel is now invisible.' if ghosted else '👁️ Channel is now visible.'}"
+        e.description = f"{'� Channel is now invisible.' if ghosted else '�️ Channel is now visible.'}"
         await interaction.response.send_message(embed=e, ephemeral=True)
 
     async def do_permit_reject(
@@ -633,7 +796,7 @@ class VoiceMaster(commands.Cog):
         target = self.resolve_member_or_role(interaction.guild, raw_target)
         if not target:
             return await interaction.response.send_message(
-                f"🚫 Couldn't find a user or role matching `{raw_target}`.", ephemeral=True
+                f"� Couldn't find a user or role matching `{raw_target}`.", ephemeral=True
             )
 
         overwrite = channel.overwrites_for(target)
@@ -678,20 +841,20 @@ class VoiceMaster(commands.Cog):
         voice_state = member.voice
         if not voice_state or not voice_state.channel:
             return await interaction.response.send_message(
-                "🚫 You need to be in a temp voice channel to claim it.", ephemeral=True
+                "� You need to be in a temp voice channel to claim it.", ephemeral=True
             )
 
         channel = voice_state.channel
         row = await db.get_temp_channel(channel_id=channel.id)
         if not row:
             return await interaction.response.send_message(
-                "🚫 This isn't a VoiceMaster temp channel.", ephemeral=True
+                "� This isn't a VoiceMaster temp channel.", ephemeral=True
             )
 
         current_owner = interaction.guild.get_member(int(row["owner_id"]))
         if current_owner and current_owner in channel.members:
             return await interaction.response.send_message(
-                f"🚫 {current_owner.mention} is still in the channel — you can't claim it.", ephemeral=True
+                f"� {current_owner.mention} is still in the channel — you can't claim it.", ephemeral=True
             )
 
         try:
@@ -707,20 +870,20 @@ class VoiceMaster(commands.Cog):
         await db.update_temp_channel(channel_id=channel.id, owner_id=member.id, join_order=order)
 
         e = base_embed(SUCCESS_COLOR)
-        e.description = f"👑 {member.mention} has claimed ownership of this channel."
+        e.description = f"� {member.mention} has claimed ownership of this channel."
         await interaction.response.send_message(embed=e, ephemeral=True)
 
     async def do_transfer(self, interaction: discord.Interaction, channel: discord.VoiceChannel, raw_target: str):
         target = self.resolve_member_or_role(interaction.guild, raw_target)
         if not isinstance(target, discord.Member):
             return await interaction.response.send_message(
-                f"🚫 Couldn't find a member matching `{raw_target}`.", ephemeral=True
+                f"� Couldn't find a member matching `{raw_target}`.", ephemeral=True
             )
         if target.bot:
-            return await interaction.response.send_message("🚫 Can't transfer ownership to a bot.", ephemeral=True)
+            return await interaction.response.send_message("� Can't transfer ownership to a bot.", ephemeral=True)
         if not target.voice or target.voice.channel != channel:
             return await interaction.response.send_message(
-                f"🚫 {target.mention} needs to be in the channel to receive ownership.", ephemeral=True
+                f"� {target.mention} needs to be in the channel to receive ownership.", ephemeral=True
             )
 
         try:
@@ -736,7 +899,7 @@ class VoiceMaster(commands.Cog):
         await db.update_temp_channel(channel_id=channel.id, owner_id=target.id, join_order=order)
 
         e = base_embed(SUCCESS_COLOR)
-        e.description = f"🔄 Ownership transferred to {target.mention}."
+        e.description = f"� Ownership transferred to {target.mention}."
         await interaction.response.send_message(embed=e, ephemeral=True)
 
     async def do_load_settings(self, interaction: discord.Interaction):
@@ -747,7 +910,7 @@ class VoiceMaster(commands.Cog):
         profile = await db.get_profile(guild_id=interaction.guild.id, user_id=interaction.user.id)
         if not profile:
             e = base_embed(DANGER_COLOR)
-            e.description = "📭 You don't have any saved settings yet. Change some settings first."
+            e.description = "� You don't have any saved settings yet. Change some settings first."
             return await interaction.response.send_message(embed=e, ephemeral=True)
 
         applied = []
@@ -811,100 +974,16 @@ class VoiceMaster(commands.Cog):
 
         e = base_embed(SUCCESS_COLOR)
         e.description = (
-            f"📥 Loaded your saved settings ({', '.join(applied)})." if applied
-            else "📭 Your saved profile is empty — nothing to apply."
+            f"� Loaded your saved settings ({', '.join(applied)})." if applied
+            else "� Your saved profile is empty — nothing to apply."
         )
         await interaction.response.send_message(embed=e, ephemeral=True)
 
     # ---------------------------------------------------------
-    #   /voice slash command fallbacks (mirror the dropdowns)
+    #   Invite (dropdown-only action, matches reference UI)
     # ---------------------------------------------------------
 
-    @voice_group.command(name="name", description="Rename your temp voice channel")
-    @app_commands.describe(name="New channel name")
-    async def voice_name(self, interaction: discord.Interaction, name: str):
-        channel, row = await self._require_ownership(interaction)
-        if channel:
-            await self.do_rename(interaction, channel, name)
-
-    @voice_group.command(name="limit", description="Set your temp voice channel's user limit")
-    @app_commands.describe(limit="0 for unlimited, up to 99")
-    async def voice_limit(self, interaction: discord.Interaction, limit: app_commands.Range[int, 0, 99]):
-        channel, row = await self._require_ownership(interaction)
-        if channel:
-            await self.do_limit(interaction, channel, limit)
-
-    @voice_group.command(name="lock", description="Lock your temp voice channel")
-    async def voice_lock(self, interaction: discord.Interaction):
-        channel, row = await self._require_ownership(interaction)
-        if channel:
-            await self.do_lock(interaction, channel, row, locked=True)
-
-    @voice_group.command(name="unlock", description="Unlock your temp voice channel")
-    async def voice_unlock(self, interaction: discord.Interaction):
-        channel, row = await self._require_ownership(interaction)
-        if channel:
-            await self.do_lock(interaction, channel, row, locked=False)
-
-    @voice_group.command(name="ghost", description="Make your temp voice channel invisible")
-    async def voice_ghost(self, interaction: discord.Interaction):
-        channel, row = await self._require_ownership(interaction)
-        if channel:
-            await self.do_ghost(interaction, channel, row, ghosted=True)
-
-    @voice_group.command(name="unghost", description="Make your temp voice channel visible")
-    async def voice_unghost(self, interaction: discord.Interaction):
-        channel, row = await self._require_ownership(interaction)
-        if channel:
-            await self.do_ghost(interaction, channel, row, ghosted=False)
-
-    @voice_group.command(name="permit", description="Permit a user or role to access your channel")
-    @app_commands.describe(user="User to permit", role="Role to permit (use instead of user)")
-    async def voice_permit(
-        self, interaction: discord.Interaction, user: discord.Member | None = None, role: discord.Role | None = None
-    ):
-        channel, row = await self._require_ownership(interaction)
-        if not channel:
-            return
-        target = user or role
-        if not target:
-            return await interaction.response.send_message("🚫 Provide a user or a role.", ephemeral=True)
-        await self.do_permit_reject(interaction, channel, "permit", str(target.id))
-
-    @voice_group.command(name="reject", description="Reject/kick a user or role from your channel")
-    @app_commands.describe(user="User to reject", role="Role to reject (use instead of user)")
-    async def voice_reject(
-        self, interaction: discord.Interaction, user: discord.Member | None = None, role: discord.Role | None = None
-    ):
-        channel, row = await self._require_ownership(interaction)
-        if not channel:
-            return
-        target = user or role
-        if not target:
-            return await interaction.response.send_message("🚫 Provide a user or a role.", ephemeral=True)
-        await self.do_permit_reject(interaction, channel, "reject", str(target.id))
-
-    @voice_group.command(name="claim", description="Claim ownership of the temp channel you're in")
-    async def voice_claim(self, interaction: discord.Interaction):
-        await self.do_claim(interaction)
-
-    @voice_group.command(name="transfer", description="Transfer ownership to another member in your channel")
-    @app_commands.describe(member="Member to transfer ownership to")
-    async def voice_transfer(self, interaction: discord.Interaction, member: discord.Member):
-        channel, row = await self._require_ownership(interaction)
-        if channel:
-            await self.do_transfer(interaction, channel, str(member.id))
-
-    @voice_group.command(name="load", description="Apply your saved VoiceMaster profile to your current channel")
-    async def voice_load(self, interaction: discord.Interaction):
-        await self.do_load_settings(interaction)
-
-    @voice_group.command(name="invite", description="Invite a user to your locked/ghosted channel")
-    @app_commands.describe(member="Member to invite")
-    async def voice_invite(self, interaction: discord.Interaction, member: discord.Member):
-        channel, row = await self._require_ownership(interaction)
-        if not channel:
-            return
+    async def do_invite(self, interaction: discord.Interaction, channel: discord.VoiceChannel, member: discord.Member):
         ow = channel.overwrites_for(member)
         ow.connect = True
         ow.view_channel = True
@@ -914,12 +993,12 @@ class VoiceMaster(commands.Cog):
             return await interaction.response.send_message(f"⚠️ Couldn't invite: {e}", ephemeral=True)
 
         e = base_embed(SUCCESS_COLOR)
-        e.description = f"📨 Invited {member.mention} to {channel.mention}."
+        e.description = f"� Invited {member.mention} to {channel.mention}."
         await interaction.response.send_message(embed=e, ephemeral=True)
         try:
             dm_embed = base_embed(BOT_COLOR)
             dm_embed.description = (
-                f"🔔 {interaction.user.mention} invited you to join their voice channel "
+                f"� {interaction.user.mention} invited you to join their voice channel "
                 f"**{channel.name}** in **{interaction.guild.name}**."
             )
             await member.send(embed=dm_embed)
