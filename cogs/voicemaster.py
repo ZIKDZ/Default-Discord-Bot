@@ -16,6 +16,71 @@ EXTRA_ALLOWED_ROLE_IDS = [
 ]
 # ==========================================================
 
+# ==========================================================
+# CUSTOM ICONS (Discord "Application Emojis")
+#
+# How to set these up:
+#   1. Go to the Discord Developer Portal -> your application -> "Emojis" tab.
+#   2. Upload one image per row below (any name is fine, keep it recognizable).
+#   3. After uploading, hover the emoji in the portal and copy its ID
+#      (or send it once in any server the bot can post custom emoji info in
+#      and copy the ID from the raw `<:name:id>` form).
+#   4. Paste the numeric ID as the value for that key below. Leave any entry
+#      as None to keep using the default unicode emoji for that item instead
+#      — nothing breaks if you only upload some of them.
+#
+# Application emojis work in any server the bot is in and do NOT require the
+# server to have USE_EXTERNAL_EMOJIS granted to the bot.
+# ==========================================================
+ICON_EMOJI_IDS: dict[str, int | None] = {
+    # Channel settings
+    "name":     1530360626885689476,   # edit
+    "limit":    1530360624788406312,   # group
+    "status":   1530360622733328464,   # chat
+    "game":     1530360621407670404,   # games
+    "bitrate":  1530360619927208067,   # graph
+    "region":   1530360610439561497,   # world
+    "claim":    1530360608841535669,   # crown
+    "transfer": 1530361618611962027,                  # 🔄  (no matching emoji uploaded)
+    "load":     1530361840817930262,                  # 📥  (no matching emoji uploaded)
+    # Channel permissions
+    "lock":     1530360595600379954,   # lock
+    "unlock":   1530360607336042516,   # openpadlock
+    "permit":   1530360593410691216,   # adduser
+    "reject":   1530360592387276981,   # removeuser
+    "invite":   1530363098362417153,                  # 📨  (no matching emoji uploaded)
+    "ghost":    1530362688381784064,                  # 👻  (no matching emoji uploaded)
+    "unghost":  1530362691032711290,                  # 👁️  (no matching emoji uploaded)
+}
+
+# Fallback unicode emoji, used per-key whenever ICON_EMOJI_IDS[key] is None.
+_UNICODE_FALLBACK = {
+    "name": "✏️", "limit": "👥", "status": "💬", "game": "🎮", "bitrate": "🎚️",
+    "region": "🌐", "claim": "👑", "transfer": "🔄", "load": "📥",
+    "lock": "🔒", "unlock": "🔓", "permit": "✅", "reject": "⛔",
+    "invite": "📨", "ghost": "👻", "unghost": "👁️",
+}
+
+# Panel embed author icon — set this to one uploaded application emoji's ID to
+# brand the panel itself. Leave None to use BRAND_ICON below instead.
+PANEL_ICON_EMOJI_ID: int | None = None
+
+
+def icon(key: str) -> str:
+    """Returns the emoji string for a dropdown option: a custom application
+    emoji (<:name:id> form) if configured, otherwise the unicode fallback."""
+    emoji_id = ICON_EMOJI_IDS.get(key)
+    if emoji_id:
+        return f"<:{key}:{emoji_id}>"
+    return _UNICODE_FALLBACK.get(key, "")
+
+
+def icon_url(emoji_id: int) -> str:
+    """CDN URL for an application/custom emoji, usable as an embed thumbnail
+    or author icon."""
+    return f"https://cdn.discordapp.com/emojis/{emoji_id}.png"
+
+
 BOT_COLOR = 0x5865F2
 SUCCESS_COLOR = 0x57C785
 DANGER_COLOR = 0xE0405A
@@ -118,14 +183,18 @@ async def sync_channel_state(channel: discord.VoiceChannel, row: dict) -> None:
 # ================================================================
 
 def build_panel_embed(channel: discord.VoiceChannel, owner: discord.abc.User) -> discord.Embed:
+    author_icon = icon_url(PANEL_ICON_EMOJI_ID) if PANEL_ICON_EMOJI_ID else BRAND_ICON
+
     e = base_embed(BOT_COLOR)
-    e.set_author(name="Welcome to your own temporary voice channel", icon_url=BRAND_ICON)
+    e.set_author(name="Welcome to your own temporary voice channel", icon_url=author_icon)
     e.description = (
         "Control your channel using the menus below\n"
         "• Use the dropdowns to manage settings and permissions\n\n"
         f"**Owner:** {owner.mention}\n"
         f"**Channel:** {channel.mention}"
     )
+    if PANEL_ICON_EMOJI_ID:
+        e.set_thumbnail(url=icon_url(PANEL_ICON_EMOJI_ID))
     e.set_footer(text="VoiceMaster • Panel refreshes each time someone joins")
     return e
 
@@ -133,15 +202,15 @@ def build_panel_embed(channel: discord.VoiceChannel, owner: discord.abc.User) ->
 class ChannelSettingsSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Name", description="Change the channel name", emoji="✏️", value="name"),
-            discord.SelectOption(label="Limit", description="Change the channel limit", emoji="👥", value="limit"),
-            discord.SelectOption(label="Status", description="Set a custom voice channel status", emoji="💬", value="status"),
-            discord.SelectOption(label="Game", description="Change the channel name to the game you're playing", emoji="🎮", value="game"),
-            discord.SelectOption(label="Bitrate", description="Change the channel bitrate", emoji="🎚️", value="bitrate"),
-            discord.SelectOption(label="Region", description="Change the channel voice region", emoji="🌐", value="region"),
-            discord.SelectOption(label="Claim", description="Claim ownership of the channel", emoji="👑", value="claim"),
-            discord.SelectOption(label="Transfer", description="Transfer ownership to another user", emoji="🔄", value="transfer"),
-            discord.SelectOption(label="Load Settings", description="Apply your saved profile to this channel", emoji="📥", value="load"),
+            discord.SelectOption(label="Name", description="Change the channel name", emoji=icon("name"), value="name"),
+            discord.SelectOption(label="Limit", description="Change the channel limit", emoji=icon("limit"), value="limit"),
+            discord.SelectOption(label="Status", description="Set a custom voice channel status", emoji=icon("status"), value="status"),
+            discord.SelectOption(label="Game", description="Change the channel name to the game you're playing", emoji=icon("game"), value="game"),
+            discord.SelectOption(label="Bitrate", description="Change the channel bitrate", emoji=icon("bitrate"), value="bitrate"),
+            discord.SelectOption(label="Region", description="Change the channel voice region", emoji=icon("region"), value="region"),
+            discord.SelectOption(label="Claim", description="Claim ownership of the channel", emoji=icon("claim"), value="claim"),
+            discord.SelectOption(label="Transfer", description="Transfer ownership to another user", emoji=icon("transfer"), value="transfer"),
+            discord.SelectOption(label="Load Settings", description="Apply your saved profile to this channel", emoji=icon("load"), value="load"),
         ]
         super().__init__(placeholder="Change channel settings", options=options, min_values=1, max_values=1, row=0)
 
@@ -153,13 +222,13 @@ class ChannelSettingsSelect(discord.ui.Select):
 class ChannelPermissionsSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Lock", description="Lock the channel", emoji="🔒", value="lock"),
-            discord.SelectOption(label="Unlock", description="Unlock the channel", emoji="🔓", value="unlock"),
-            discord.SelectOption(label="Permit", description="Permit a user/role to access the channel", emoji="✅", value="permit"),
-            discord.SelectOption(label="Reject", description="Reject/kick a user/role from the channel", emoji="⛔", value="reject"),
-            discord.SelectOption(label="Invite", description="Invite a user to access the channel", emoji="📨", value="invite"),
-            discord.SelectOption(label="Ghost", description="Make your channel invisible", emoji="👻", value="ghost"),
-            discord.SelectOption(label="Unghost", description="Make your channel visible", emoji="👁️", value="unghost"),
+            discord.SelectOption(label="Lock", description="Lock the channel", emoji=icon("lock"), value="lock"),
+            discord.SelectOption(label="Unlock", description="Unlock the channel", emoji=icon("unlock"), value="unlock"),
+            discord.SelectOption(label="Permit", description="Permit a user/role to access the channel", emoji=icon("permit"), value="permit"),
+            discord.SelectOption(label="Reject", description="Reject/kick a user/role from the channel", emoji=icon("reject"), value="reject"),
+            discord.SelectOption(label="Invite", description="Invite a user to access the channel", emoji=icon("invite"), value="invite"),
+            discord.SelectOption(label="Ghost", description="Make your channel invisible", emoji=icon("ghost"), value="ghost"),
+            discord.SelectOption(label="Unghost", description="Make your channel visible", emoji=icon("unghost"), value="unghost"),
         ]
         super().__init__(placeholder="Change channel permissions", options=options, min_values=1, max_values=1, row=1)
 
