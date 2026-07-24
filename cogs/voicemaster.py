@@ -551,17 +551,66 @@ class VoiceMaster(commands.Cog):
         panel_channel_id = hub.get("panel_channel_id")
         panel_channel = guild.get_channel(int(panel_channel_id)) if panel_channel_id else None
         if not isinstance(panel_channel, discord.TextChannel):
-            # Fall back to the voice channel's own text chat
+            # Fall back to the voice channel's own built-in text chat
             panel_channel = channel
 
+        embed = build_panel_embed(channel, member)
+        view = VoicePanelView()
+
+        me = guild.me
+        perms = panel_channel.permissions_for(me) if me else None
+        can_send = bool(perms and perms.send_messages and perms.embed_links)
+
+        if not can_send:
+            log.warning(
+                "VoiceMaster: missing send_messages/embed_links in panel channel %s (guild %s) — "
+                "falling back to DM",
+                getattr(panel_channel, "id", None),
+                guild.id,
+            )
+            await self._send_panel_fallback(member, channel, embed, view, reason="missing_permissions")
+            return
+
         try:
-            embed = build_panel_embed(channel, member)
-            msg = await panel_channel.send(embed=embed, view=VoicePanelView())
+            msg = await panel_channel.send(embed=embed, view=view)
             await db.update_temp_channel(
                 channel_id=channel.id, panel_msg_id=msg.id, panel_chan_id=panel_channel.id
             )
         except discord.HTTPException:
-            log.exception("VoiceMaster: failed to post control panel")
+            log.exception("VoiceMaster: failed to post control panel in %s", getattr(panel_channel, "id", None))
+            await self._send_panel_fallback(member, channel, embed, view, reason="send_failed")
+
+    async def _send_panel_fallback(
+        self,
+        member: discord.Member,
+        channel: discord.VoiceChannel,
+        embed: discord.Embed,
+        view: "VoicePanelView",
+        *,
+        reason: str,
+    ) -> None:
+        """
+        Last-resort delivery when the panel can't be posted in the temp channel's
+        text chat (usually: the bot lacks Send Messages/Embed Links there, which
+        is common because voice-channel text chat inherits category permissions
+        rather than getting any default grant). DMs the owner so they still get
+        working controls instead of silently getting nothing.
+        """
+        try:
+            await member.send(
+                content=(
+                    f"⚠️ I couldn't post your VoiceMaster control panel in {channel.mention} "
+                    "(I may be missing **Send Messages** or **Embed Links** there). "
+                    "Here are your controls instead:"
+                ),
+                embed=embed,
+                view=view,
+            )
+        except discord.HTTPException:
+            log.warning(
+                "VoiceMaster: panel fallback DM also failed for %s in channel %s (reason=%s)",
+                member.id, channel.id, reason,
+            )
 
     async def _handle_leave(
         self, guild: discord.Guild, channel: discord.VoiceChannel, row: dict, member: discord.Member
